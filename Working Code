@@ -1,0 +1,298 @@
+import os
+import cv2
+import numpy as np
+import matplotlib.pyplot as plt
+from PIL import Image
+
+from cryptography.hazmat.primitives.asymmetric import rsa, ec, padding
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.backends import default_backend
+from reedsolo import RSCodec
+
+# ==========================================
+# 1. THE HARDENED STEGANOGRAPHY CLASS
+# ==========================================
+class RobustF5Steganography:
+    def __init__(self):
+        self.M = np.array([
+            [0,0,0,0,0,0,0,1,1,1,1,1,1,1,1],
+            [0,0,0,1,1,1,1,0,0,0,0,1,1,1,1],
+            [0,1,1,0,0,1,1,0,0,1,1,0,0,1,1],
+            [1,0,1,0,1,0,1,0,1,0,1,0,1,0,1]
+        ])
+        self.Q = 18.0 
+        self.anchors = [
+            (0,1), (1,0), (2,0), (1,1), (0,2),
+            (0,3), (1,2), (2,1), (3,0), (4,0),
+            (3,1), (2,2), (1,3), (0,4), (0,5)
+        ]
+
+    def _check_empty_payload(self, payload):
+        if not payload: raise ValueError("Payload cannot be empty!")
+
+    def _dct(self, data, block_y, block_x):
+        dct_data = np.zeros_like(data)
+        for i in range(block_y):
+            for j in range(block_x):
+                r, c = i * 8, j * 8
+                dct_data[r:r+8, c:c+8] = np.round(cv2.dct(data[r:r+8, c:c+8]) / self.Q)
+        return dct_data
+
+    def _idct(self, data, block_y, block_x):
+        idct_data = np.zeros_like(data)
+        for i in range(block_y):
+            for j in range(block_x):
+                r, c = i * 8, j * 8
+                idct_data[r:r+8, c:c+8] = cv2.idct(data[r:r+8, c:c+8] * self.Q)
+        return idct_data
+
+    def _derive_prng_key(self, password: bytes, salt: bytes) -> bytes:
+        """Derive a cryptographically strong key from the password."""
+        kdf = PBKDF2HMAC(
+            algorithm=hashes.SHA256(), length=32, salt=salt,
+            iterations=300000, backend=default_backend()
+        )
+        return kdf.derive(password)
+
+    def _secure_permutation(self, num_blocks: int, prng_key: bytes) -> list:
+        """
+        Replaces the Mersenne Twister.
+        Uses AES-CTR as a CSPRNG to generate keystream bytes, driving a Fisher-Yates shuffle.
+        """
+        cipher = Cipher(algorithms.AES(prng_key), modes.CTR(b'\x00' * 16), backend=default_backend())
+        encryptor = cipher.encryptor()
+        
+        # 4 bytes per block index for the permutation
+        keystream = encryptor.update(b'\x00' * (num_blocks * 4)) + encryptor.finalize()
+        
+        indices = list(range(num_blocks))
+        for i in range(num_blocks - 1, 0, -1):
+            rand_int = int.from_bytes(keystream[i*4 : (i*4)+4], 'big')
+            j = rand_int % (i + 1)
+            indices[i], indices[j] = indices[j], indices[i]
+            
+        return indices
+
+    def encode(self, carrier: Image.Image, payload_bytes: bytes, password: bytes) -> Image.Image:
+        self._check_empty_payload(payload_bytes)
+        rs = RSCodec(30) 
+        armored_bytes = rs.encode(payload_bytes)
+
+        binary_bin = ''.join(f'{b:08b}' for b in armored_bytes)
+        lenth_bin = format(len(binary_bin), '032b') # 32-bit length to support larger payloads securely
+        binary_bin = lenth_bin + binary_bin
+        data_length = len(binary_bin)
+        
+        img = np.array(carrier)
+        img1 = img[:, :, 1].astype(np.float32)
+        
+        h, w = img1.shape
+        block_y, block_x = h // 8, w // 8
+        
+        d = self._dct(img1, block_y, block_x)
+        stego = d.copy()
+        
+        # The salt should theoretically be stored in the image headers, 
+        # but for this spatial execution, we use a static domain separator.
+        prng_key = self._derive_prng_key(password, b'F5_Stego_Domain_Salt')
+        permuted_blocks = self._secure_permutation(block_y * block_x, prng_key)
+        
+        num = 0
+        for block_idx in permuted_blocks:
+            if num >= data_length: break
+            
+            i, j = block_idx // block_x, block_idx % block_x
+            r, c = i * 8, j * 8
+            a = np.zeros((15, 1))
+            
+            for idx, (dr, dc) in enumerate(self.anchors):
+                a[idx, 0] = abs(int(stego[r+dr, c+dc])) % 2
+            
+            data_bit = np.zeros((4, 1))
+            if num + 3 < data_length:
+                data_bit[0, 0] = int(binary_bin[num])
+                data_bit[1, 0] = int(binary_bin[num+1])
+                data_bit[2, 0] = int(binary_bin[num+2])
+                data_bit[3, 0] = int(binary_bin[num+3])
+            else:
+                break
+                
+            temp = np.dot(self.M, a) % 2
+            ntemp = np.logical_xor(data_bit, temp)
+            n = int(ntemp[0,0]*8 + ntemp[1,0]*4 + ntemp[2,0]*2 + ntemp[3,0])
+            
+            if n > 0: 
+                dr, dc = self.anchors[n-1]
+                val = stego[r+dr, c+dc]
+                # Secure adjustment avoiding the zero-coefficient trap (F5 shrinkage mitigation)
+                if val > 0:
+                    stego[r+dr, c+dc] -= 1
+                elif val < 0:
+                    stego[r+dr, c+dc] += 1
+                else:
+                    stego[r+dr, c+dc] = 1 # Force non-zero to preserve statistics
+                
+            num += 4
+            
+        stego = self._idct(stego, block_y, block_x)
+        stego = np.clip(stego, 0, 255)
+        img[:, :, 1] = np.uint8(np.round(stego))
+        return Image.fromarray(img)
+
+    def decode(self, stego_image: Image.Image, password: bytes) -> bytes:
+        img = np.array(stego_image)
+        img1 = img[:, :, 1].astype(np.float32)
+        h, w = img1.shape
+        block_y, block_x = h // 8, w // 8
+        
+        d = self._dct(img1, block_y, block_x)
+        extracted_bits = ""
+        
+        prng_key = self._derive_prng_key(password, b'F5_Stego_Domain_Salt')
+        permuted_blocks = self._secure_permutation(block_y * block_x, prng_key)
+        
+        for block_idx in permuted_blocks:
+            i, j = block_idx // block_x, block_idx % block_x
+            r, c = i * 8, j * 8
+            a = np.zeros((15, 1))
+            
+            for idx, (dr, dc) in enumerate(self.anchors):
+                a[idx, 0] = abs(int(d[r+dr, c+dc])) % 2
+            
+            temp = np.dot(self.M, a) % 2
+            extracted_bits += f"{int(temp[0,0])}{int(temp[1,0])}{int(temp[2,0])}{int(temp[3,0])}"
+            
+            if len(extracted_bits) >= 32:
+                expected_length = int(extracted_bits[:32], 2)
+                if len(extracted_bits) >= 32 + expected_length: break
+
+        payload_len = int(extracted_bits[:32], 2)
+        payload_bin = extracted_bits[32:32+payload_len]
+        extracted_bytes = bytearray()
+        
+        for i in range(0, len(payload_bin), 8):
+            byte_chunk = payload_bin[i:i+8]
+            if len(byte_chunk) == 8: 
+                extracted_bytes.append(int(byte_chunk, 2))
+        
+        rs = RSCodec(30)
+        try:
+            return rs.decode(bytes(extracted_bytes))[0]
+        except Exception as e:
+            raise ValueError(f"Reed-Solomon decoding failed, data compromised: {e}")
+
+# ==========================================
+# 2. CRYPTO ROUTER (NO BLOWFISH, FULL AEAD)
+# ==========================================
+
+def generate_vault():
+    """Secrets must be dynamically generated, never hardcoded."""
+    return {
+        'symmetric_pass': os.urandom(32), # Replaces the static Blowfish PSK
+        'rsa_priv': rsa.generate_private_key(public_exponent=65537, key_size=4096), # Upgraded to 4096
+        'ecc_priv': ec.generate_private_key(ec.SECP384R1()) # Upgraded curve
+    }
+
+def get_public_vault(vault):
+    return {
+        'rsa_pub': vault['rsa_priv'].public_key(),
+        'ecc_pub': vault['ecc_priv'].public_key()
+    }
+
+def encrypt_payload_v3(message_text: str, algo_choice: int, pub_vault: dict, symmetric_pass: bytes) -> bytes:
+    """Uses AES-256-GCM as the core transport, wrapped by asymmetric or KDF systems."""
+    aes_key = AESGCM.generate_key(bit_length=256)
+    aesgcm = AESGCM(aes_key)
+    nonce = os.urandom(12)
+    ciphertext = aesgcm.encrypt(nonce, message_text.encode('utf-8'), None)
+
+    if algo_choice == 1:
+        # RSA-4096 OAEP Key Wrap
+        wrapped_key = pub_vault['rsa_pub'].encrypt(
+            aes_key, 
+            padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None)
+        )
+    elif algo_choice == 2:
+        # Modern Symmetric Key Wrap using PBKDF2 (Farewell, Blowfish)
+        salt = os.urandom(16)
+        kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=salt, iterations=400000, backend=default_backend())
+        kek = kdf.derive(symmetric_pass)
+        wrapper = AESGCM(kek)
+        wrap_nonce = os.urandom(12)
+        wrapped_aes_key = wrapper.encrypt(wrap_nonce, aes_key, None)
+        wrapped_key = salt + wrap_nonce + wrapped_aes_key
+    elif algo_choice == 3:
+        # ECC SECP384R1 ECDH Key Wrap
+        ephemeral_priv = ec.generate_private_key(ec.SECP384R1())
+        ephemeral_pub_bytes = ephemeral_priv.public_key().public_bytes(
+            encoding=serialization.Encoding.X962, format=serialization.PublicFormat.CompressedPoint
+        )
+        shared_secret = ephemeral_priv.exchange(ec.ECDH(), pub_vault['ecc_pub'])
+        wrap_key = HKDF(algorithm=hashes.SHA256(), length=32, salt=None, info=b'AES-GCM-KeyWrap').derive(shared_secret)
+        
+        wrapper = AESGCM(wrap_key)
+        wrap_nonce = os.urandom(12)
+        wrapped_ecc_key = wrapper.encrypt(wrap_nonce, aes_key, None)
+        wrapped_key = ephemeral_pub_bytes + wrap_nonce + wrapped_ecc_key
+
+    size_bytes = len(wrapped_key).to_bytes(4, 'big') # Upgraded to 4 bytes for larger key encapsulations
+    return size_bytes + wrapped_key + nonce + ciphertext
+
+
+print(" GENERATING SECURE FORENSIC BLOAT ANALYSIS ")
+SECRET_MESSAGE = "Privacy is an inherent human right, and a requirement for maintaining the human condition with dignity and respect."
+algorithms_map = {1: "RSA-4096 Wrap", 2: "Symmetric PBKDF2 Wrap", 3: "ECC SECP384R1 Wrap"}
+image_path = '/kaggle/input/datasets/alphafoxreveals/test-images-for-steganography/Bavaria.jpg'
+
+if os.path.exists(image_path):
+    vault = generate_vault()
+    pub_vault = get_public_vault(vault)
+    stego_instance = RobustF5Steganography()
+    
+    original_img = Image.open(image_path)
+    baseline_arr = np.array(original_img)
+    
+    stego_images = {}
+    diff_maps = {}
+
+    for algo_id, algo_name in algorithms_map.items():
+        print(f"[*] Compiling payload for: {algo_name}...")
+        payload = encrypt_payload_v3(SECRET_MESSAGE, algo_id, pub_vault, vault['symmetric_pass'])
+        
+        # We now use the strong symmetric pass as the PRNG seed for the stego class
+        stego = stego_instance.encode(original_img, payload, vault['symmetric_pass'])
+        stego_arr = np.array(stego)
+        stego_images[algo_name] = stego
+        
+        diff = np.abs(baseline_arr[:, :, 1].astype(np.int16) - stego_arr[:, :, 1].astype(np.int16))
+        diff_maps[algo_name] = np.clip(diff * 50, 0, 255).astype(np.uint8)
+
+    # Rendering the Visualization (same layout, strictly logical)
+    fig, axes = plt.subplots(2, 4, figsize=(22, 10), facecolor='#111111')
+    fig.patch.set_facecolor('#111111')
+
+    def style_ax(ax, title):
+        ax.set_title(title, color='white', fontsize=14, fontweight='bold', pad=15)
+        ax.axis('off')
+
+    axes[0, 0].imshow(baseline_arr)
+    style_ax(axes[0, 0], "Original Carrier")
+    axes[1, 0].imshow(np.zeros_like(diff_maps["Symmetric PBKDF2 Wrap"]), cmap='inferno')
+    style_ax(axes[1, 0], "Baseline Matrix")
+
+    col = 1
+    for algo_name in algorithms_map.values():
+        axes[0, col].imshow(stego_images[algo_name])
+        style_ax(axes[0, col], f"{algo_name}\nActive")
+        axes[1, col].imshow(diff_maps[algo_name], cmap='inferno')
+        style_ax(axes[1, col], f"Scattered Matrix Footprint")
+        col += 1
+
+    plt.suptitle("Cryptographically Secure Permutative Straddling", color='white', fontsize=20, fontweight='bold', y=0.98)
+    plt.tight_layout()
+    plt.subplots_adjust(top=0.88)
+    plt.show()
