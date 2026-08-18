@@ -1,3 +1,4 @@
+<img width="2190" height="964" alt="__results___3_1" src="https://github.com/user-attachments/assets/1d6408a2-05b0-473c-a621-b26df1e7dbf6" />
 # F5-Steganography-with-permutative-straddling
 # Cryptographically Secure Permutative Straddling (F5 Steganography)
 
@@ -35,6 +36,8 @@ Do not conflate visual stealth with statistical stealth.
 
 *   **What this protects against:** Casual observation, forensic diff-mapping, password-guessing, and tampering. The encryption will resist state-level adversaries.
 *   **What this is vulnerable to:** Advanced statistical steganalysis. Injecting perfectly random data (encrypted ciphertext) into a natural image inherently alters its frequency domain. While the spatial footprint is randomized, a dedicated intelligence agency analyzing the DCT coefficient histograms may flag the image as an anomaly. 
+
+![Uploading __results___3_1.png…]()
 
 ## Usage Requirements
 
