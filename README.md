@@ -1,5 +1,4 @@
-# F5-Steganography-with-permutative-straddling
-# Cryptographically Secure Permutative Straddling (F5 Steganography)
+# F5-Steganography with permutative straddling
 
 # What are we trying to do here?
 
