@@ -14,9 +14,12 @@ F5 steganography algorithm hides secret data in JPEG images by modifying transfo
 
 This is the tech part but listen an image has two parts, luminance and chrominance, lumina - brightness, chrominance - colors of an image. Human eye is more receptive to brightness rather than color due to the fact that we have more rod cells than cone cells. F5 follows the pipeline of JPEG compression algorithm which hides data in the frequency co-efficients. 
 
-Watch this wonderful video by Branch Education explain JPEG compression.
+Watch this wonderful video by Branch Education explaining JPEG compression.
 
 https://youtu.be/Kv1Hiv3ox8I?si=N3Wg2mfHnqH6WNwt
+
+<img width="640" height="355" alt="image" src="https://github.com/user-attachments/assets/6d1be88b-defc-4312-ad70-14255b020f7a" />
+
 
 ## Philosophy and Full Disclosure
 *"Anyone can design a cipher that they themselves cannot break." — Schneier's Law*
