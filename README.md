@@ -1,8 +1,13 @@
-# F5-Steganography with permutative straddling
+<img width="1501" height="711" alt="image" src="https://github.com/user-attachments/assets/045e1625-23ea-472d-a526-6c6f7c2ab706" /># F5-Steganography with permutative straddling
 
 # What are we trying to do here?
 
-In a nutshell we are trying to hide text messages in an image but we are not directly manipulating pixel values like that of Least Significant Bit, In a standard 24-bit color image, each pixel has three color channels they are:
+In a nutshell we are trying to hide text messages in an image 
+
+<img width="1501" height="711" alt="image" src="https://github.com/user-attachments/assets/bb01ac05-56a2-4b04-809d-288c2ede7692" />
+
+
+but we are not directly manipulating pixel values like that of Least Significant Bit, In a standard 24-bit color image, each pixel has three color channels they are:
 
 Red, Green, and Blue. Each channel uses 8 bits or 1 byte with values from 0 to 255. LSB steganography replaces the last/rightmost bit of these color values with bits from a secret message. Because changing the last bit alters the color intensity by only 1 unit, the human eye cannot see the difference.
 
