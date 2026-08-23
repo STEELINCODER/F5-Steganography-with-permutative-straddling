@@ -1,4 +1,4 @@
-<img width="1501" height="711" alt="image" src="https://github.com/user-attachments/assets/045e1625-23ea-472d-a526-6c6f7c2ab706" /># F5-Steganography with permutative straddling
+# F5-Steganography with permutative straddling
 
 # What are we trying to do here?
 
